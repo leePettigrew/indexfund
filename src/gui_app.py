@@ -35,6 +35,10 @@ Requirements:
 Created: April 12, 2025
 """
 
+# ==============================================================================
+#  IMPORTS
+# ==============================================================================
+
 import os
 import sys
 import time
@@ -65,6 +69,10 @@ from matplotlib.cm import get_cmap
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, StringVar, BooleanVar, DoubleVar, IntVar
 
+# ==============================================================================
+#  GLOBAL SETTINGS (Theme, Warnings, Logging)
+# ==============================================================================
+
 # Set appearance and styling
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -93,6 +101,12 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     """Calculate the Sharpe ratio for a series of returns."""
     excess_returns = returns - risk_free_rate
     return np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) > 0 else 0
+
+
+
+# ==============================================================================
+#  DATA MANAGEMENT: DataManager
+# ==============================================================================
 
 class DataManager:
     """Handles data collection, processing, and management for the application."""
@@ -306,6 +320,12 @@ class DataManager:
             if callback:
                 callback(f"Error loading returns: {e}")
             return False
+
+
+# ==============================================================================
+#  OPTIMIZATION MODULES: AMPLOptimizer, GAOptimizer
+# ==============================================================================
+
 
 class AMPLOptimizer:
     """Handles portfolio optimization using AMPL and Gurobi."""
@@ -669,6 +689,10 @@ class GAOptimizer:
             logger.error(f"GA Optimization error: {e}")
             return None
 
+# ==============================================================================
+#  VISUALIZATION MODULE: VisualizationManager
+# ==============================================================================
+
 class VisualizationManager:
     """Handles creation and display of visualizations for portfolio analysis."""
 
@@ -738,6 +762,7 @@ class VisualizationManager:
         """
         Create an interactive performance comparison plot.
         Plots the cumulative returns for each selected portfolio result along with the S&P 100 benchmark.
+        Now includes interactive legend toggling.
 
         Args:
             results: List of optimization result dictionaries to compare.
@@ -755,6 +780,7 @@ class VisualizationManager:
 
         # Assume the benchmark (S&P 100) returns are identical across the selected results.
         benchmark_returns = np.array(results[0]['benchmark_returns'])
+        # If you have dates from your returns DataFrame, you can replace np.arange(...) with that array.
         dates = np.arange(len(benchmark_returns))
 
         # Plot the S&P 100 benchmark.
@@ -779,17 +805,62 @@ class VisualizationManager:
         ax.tick_params(axis='x', colors='white')
         ax.tick_params(axis='y', colors='white')
         ax.grid(True, linestyle='--', alpha=0.3)
-        ax.legend(loc='upper left', facecolor='#2b2b2b', edgecolor='#555555', framealpha=0.8)
 
-        # Attach interactive cursors with mplcursors.
+        # Create and configure the legend.
+        legend = ax.legend(loc='upper left', facecolor='#2b2b2b', edgecolor='#555555', framealpha=0.8)
+        # Enable picking for each legend line.
+        for legline in legend.get_lines():
+            legline.set_picker(5)  # 5-point tolerance
+
+        # Callback for legend pick events.
+        def on_pick(event):
+            legend_line = event.artist
+            label = legend_line.get_label()
+            # Find the matching data line by comparing labels.
+            for line in ax.get_lines():
+                if line.get_label() == label:
+                    # Toggle visibility.
+                    line.set_visible(not line.get_visible())
+                    # Dim the legend marker if hidden.
+                    legend_line.set_alpha(1.0 if line.get_visible() else 0.2)
+                    break
+            fig.canvas.draw_idle()
+
+        fig.canvas.mpl_connect('pick_event', on_pick)
+
+        # Attach interactive cursors (optional basic tooltips).
         import mplcursors
-        cursor = mplcursors.cursor(ax.lines, hover=True)
+        cursor = mplcursors.cursor(ax.get_lines(), hover=True)
         cursor.connect("add", lambda sel: sel.annotation.set_text(
             f"Period: {int(sel.target[0])}\nValue: {sel.target[1]:.2f}"
         ))
 
         plt.tight_layout()
         return fig
+
+    def popout_graph(self, fig: Figure) -> None:
+        """
+        Create a popout (full screen) window and embed the provided Matplotlib figure.
+
+        Args:
+            fig: The Matplotlib Figure to display in the popout.
+        """
+        import tkinter as tk
+        # Create a new top-level window.
+        popout_win = tk.Toplevel()
+        popout_win.title("Full Screen Graph")
+        # Optionally set the window to full screen.
+        popout_win.attributes('-fullscreen', True)  # Remove or comment out if full screen is not desired.
+
+        # Embed the Matplotlib figure into this window.
+        canvas = FigureCanvasTkAgg(fig, master=popout_win)
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.pack(fill="both", expand=True)
+        canvas.draw()
+
+        # Optional: Add a button to exit the full-screen popout.
+        close_button = ctk.CTkButton(popout_win, text="Close Full Screen", command=popout_win.destroy)
+        close_button.pack(pady=10)
 
     def plot_performance_comparison(self, portfolio_returns: np.ndarray,
                                    benchmark_returns: np.ndarray,
@@ -1097,6 +1168,10 @@ class VisualizationManager:
         # Add grid lines
         ax.grid(True, linestyle='--', alpha=0.3, axis='x')
 
+# ==============================================================================
+#  GUI APPLICATION: EnhancedGUI
+# ==============================================================================
+
 class EnhancedGUI(ctk.CTk):
     """Main application GUI"""
 
@@ -1110,6 +1185,8 @@ class EnhancedGUI(ctk.CTk):
 
         self.interactive_var = BooleanVar(master=self, value=False)
 
+        self.current_fig = None # for interactive graph
+
         # Initialize components
         self.data_manager = DataManager()
         self.ampl_optimizer = AMPLOptimizer(self.data_manager)
@@ -1121,6 +1198,155 @@ class EnhancedGUI(ctk.CTk):
 
         # Create GUI layout
         self.setup_ui()
+
+    def log_analysis_result(self, result: dict):
+        """
+        Log a very detailed analysis summary based on the optimization result.
+        Computes and logs an extended set of metrics for in-depth insight.
+        """
+        # Retrieve raw returns
+        pr = result['portfolio_returns']
+        br = result['benchmark_returns']
+        t = len(pr)  # number of periods (quarters)
+
+        # Cumulative returns
+        cum_return_portfolio = np.prod(1 + pr) - 1
+        cum_return_benchmark = np.prod(1 + br) - 1
+
+        # Volatility (standard deviation) of returns (quarterly and annualized)
+        vol_portfolio = np.std(pr)
+        vol_benchmark = np.std(br)
+        ann_vol_portfolio = vol_portfolio * np.sqrt(4)
+        ann_vol_benchmark = vol_benchmark * np.sqrt(4)
+
+        # Compute maximum drawdown for the portfolio
+        cumulative_curve = np.cumprod(1 + pr)
+        running_max = np.maximum.accumulate(cumulative_curve)
+        drawdowns = (cumulative_curve - running_max) / running_max
+        max_drawdown = np.min(drawdowns)
+
+        # Beta calculation (slope from the covariance with the benchmark)
+        beta = np.cov(pr, br)[0, 1] / np.var(br) if np.var(br) != 0 else np.nan
+
+        # Annualized return: based on cumulative portfolio return over t quarters
+        ann_return_portfolio = (1 + cum_return_portfolio) ** (4 / t) - 1
+        ann_return_benchmark = (1 + cum_return_benchmark) ** (4 / t) - 1
+
+        # CAPM Alpha estimation (using a risk-free rate of 2% as used in the sharpe function)
+        risk_free_rate = 0.02
+        alpha = (ann_return_portfolio - risk_free_rate) - beta * (ann_return_benchmark - risk_free_rate)
+
+        # Format the list of selected stocks with weights
+        stock_details = "\n".join([f"  - {ticker}: {weight:.4f}"
+                                   for ticker, weight in result.get('selected_stocks', {}).items()])
+
+        # If using GA, include details from the fitness history
+        fitness_details = ""
+        if result.get('method') == 'GA' and 'fitness_history' in result and result['fitness_history']:
+            best_fitness = result['fitness_history'][-1]
+            fitness_details = f"Best GA Fitness (Final Generation): {best_fitness:.4f}\n"
+
+        # Construct the detailed analysis message
+        analysis_msg = (
+            "\n=== Detailed Analysis Summary ===\n"
+            f"Method: {result['method']}\n"
+            f"Number of Stocks Selected (q): {result['q']}\n\n"
+            "Selected Stocks and Weights:\n"
+            f"{stock_details}\n\n"
+            f"Total Tracking Error: {result['tracking_error']:.4e}\n"
+            f"Tracking Error per Period: {result['tracking_error_per_period']:.4e}\n"
+            f"Mean Portfolio Return (per period): {np.mean(pr):.4%}\n"
+            f"Mean Benchmark Return (per period): {np.mean(br):.4%}\n"
+            f"Sharpe Ratio: {result['sharpe_ratio']:.4f}\n"
+            f"MSE: {result['mse']:.4e}\n"
+            f"Correlation with S&P 100: {result['correlation']:.4f}\n\n"
+            "Return Metrics:\n"
+            f"  - Cumulative Portfolio Return: {cum_return_portfolio:.4%}\n"
+            f"  - Cumulative Benchmark Return: {cum_return_benchmark:.4%}\n"
+            f"  - Annualized Portfolio Return: {ann_return_portfolio:.4%}\n"
+            f"  - Annualized Benchmark Return: {ann_return_benchmark:.4%}\n\n"
+            "Volatility Metrics:\n"
+            f"  - Quarterly Portfolio Volatility: {vol_portfolio:.4%}\n"
+            f"  - Annualized Portfolio Volatility: {ann_vol_portfolio:.4%}\n"
+            f"  - Quarterly Benchmark Volatility: {vol_benchmark:.4%}\n"
+            f"  - Annualized Benchmark Volatility: {ann_vol_benchmark:.4%}\n\n"
+            f"Maximum Drawdown (Portfolio): {max_drawdown:.4%}\n\n"
+            "Risk Factors:\n"
+            f"  - Beta (Portfolio vs. Benchmark): {beta:.4f}\n"
+            f"  - CAPM Alpha: {alpha:.4%}\n\n"
+            f"{fitness_details}"
+            "==================================\n"
+        )
+        self.log_optim(analysis_msg)
+
+    def find_best_ga_result(self):
+        """Iterate over GA parameter settings with generations and population size in steps of 5, and select the best result based on Sharpe ratio."""
+        def run_best_ga():
+            self.log_optim("Starting best GA result search...")
+            best_result = None
+            best_score = -np.inf
+            best_params = None
+
+            # Iterate over q, generations, and population in given ranges with steps.
+            for q in range(1, 21):  # q = 1,2,...,20
+                for generations in range(100, 151, 5):  # generations = 100, 105, ..., 150
+                    for population in range(50, 101, 5):  # population = 50, 55, ..., 100
+                        self.log_optim(f"Testing GA: q={q}, generations={generations}, population={population}")
+                        result = self.ga_optimizer.optimize(q, generations, population, callback=self.log_optim)
+                        if result is None:
+                            continue
+                        # Use the Sharpe ratio as the scoring metric.
+                        score = result.get('sharpe_ratio', 0)
+                        self.log_optim(f"Result: Sharpe Ratio = {score:.4f}")
+                        if score > best_score:
+                            best_score = score
+                            best_result = result
+                            best_params = (q, generations, population)
+                        # Pause briefly to yield control and keep the GUI responsive.
+                        time.sleep(0.1)
+            if best_result is not None:
+                self.log_optim("Best GA result found!")
+                self.log_optim(f"Best parameters: q={best_params[0]}, generations={best_params[1]}, "
+                               f"population={best_params[2]} with Sharpe Ratio = {best_score:.4f}")
+                self.optimization_results.append(best_result)
+                self.update_result_dropdown()
+                self.viz_manager.create_dashboard(best_result, self.optim_viz_frame)
+            else:
+                self.log_optim("No valid GA result found.")
+        threading.Thread(target=run_best_ga, daemon=True).start()
+
+
+
+    def find_best_ampl_result(self):
+        """Iterate over q values from 1 to 20 for the AMPL optimizer and select the best result based on Sharpe ratio."""
+        def run_best_ampl():
+            self.log_optim("Starting best AMPL result search...")
+            best_result = None
+            best_score = -np.inf
+            best_q = None
+
+            for q in range(1, 21):  # q = 1,2,...,20
+                self.log_optim(f"Testing AMPL with q={q}")
+                result = self.ampl_optimizer.optimize(q, callback=self.log_optim)
+                if result is None:
+                    continue
+                score = result.get('sharpe_ratio', 0)
+                self.log_optim(f"Result for q={q}: Sharpe Ratio = {score:.4f}")
+                if score > best_score:
+                    best_score = score
+                    best_result = result
+                    best_q = q
+                # Pause briefly to yield control.
+                time.sleep(0.1)
+            if best_result is not None:
+                self.log_optim("Best AMPL result found!")
+                self.log_optim(f"Best q: {best_q} with Sharpe Ratio = {best_score:.4f}")
+                self.optimization_results.append(best_result)
+                self.update_result_dropdown()
+                self.viz_manager.create_dashboard(best_result, self.optim_viz_frame)
+            else:
+                self.log_optim("No valid AMPL result found.")
+        threading.Thread(target=run_best_ampl, daemon=True).start()
 
 
 
@@ -1250,6 +1476,16 @@ class EnhancedGUI(ctk.CTk):
             fg_color="#e76f51", hover_color="#e63946", width=200
         ).pack(side="left", padx=5)
 
+        ctk.CTkButton(
+            btn_frame, text="Find Best GA Result", command=self.find_best_ga_result,
+            fg_color="#8ac926", hover_color="#70c1b3", width=200
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            btn_frame, text="Find Best AMPL Result", command=self.find_best_ampl_result,
+            fg_color="#8ac926", hover_color="#70c1b3", width=200
+        ).pack(side="left", padx=5)
+
         # Create split view for log and results
         content_frame = ctk.CTkFrame(self.optim_tab, corner_radius=10)
         content_frame.pack(padx=10, pady=10, fill="both", expand=True)
@@ -1363,6 +1599,15 @@ class EnhancedGUI(ctk.CTk):
             fg_color="#2a9d8f",
             hover_color="#264653"
         ).pack(pady=5)
+
+        popout_button = ctk.CTkButton(
+            control_frame,
+            text="Popout Graph",
+            fg_color="#2a9d8f",
+            hover_color="#264653",
+            command=lambda: self.viz_manager.popout_graph(self.current_fig)
+        )
+        popout_button.pack(side="right", padx=5)
 
         # Frame where the comparison figure(s) will be displayed
         self.comp_canvas_frame = ctk.CTkFrame(self.comp_tab, corner_radius=10)
@@ -1548,6 +1793,7 @@ class EnhancedGUI(ctk.CTk):
         self.viz_manager.create_dashboard(result, self.optim_viz_frame)
 
         self.log_optim("AMPL optimization complete!")
+        self.log_analysis_result(result)
 
     def run_ga_optimization(self):
         """Run Genetic Algorithm optimization."""
@@ -1606,6 +1852,8 @@ class EnhancedGUI(ctk.CTk):
         self.viz_manager.create_dashboard(result, self.optim_viz_frame)
 
         self.log_optim("GA optimization complete!")
+
+        self.log_analysis_result(result)
 
     # Visualization tab functions
     def update_visualization(self, selected=None):
@@ -1762,6 +2010,8 @@ class EnhancedGUI(ctk.CTk):
             fig = plt.figure(figsize=(12, 8), facecolor='#2b2b2b')
             plt.text(0.5, 0.5, "Invalid Comparison Metric", color='white', ha='center', va='center')
 
+        self.current_fig = fig
+
         # Embed the created figure into the comparison canvas in the GUI
         canvas = FigureCanvasTkAgg(fig, master=self.comp_canvas_frame)
         canvas.draw()
@@ -1849,6 +2099,13 @@ class EnhancedGUI(ctk.CTk):
             return True
         except ValueError:
             return False
+
+
+
+
+# ==============================================================================
+#  MAIN ENTRY POINT
+# ==============================================================================
 
 def main():
     """Main function to run the application."""
