@@ -1,5 +1,3 @@
-Here's your combined and enhanced README with the **Default Options & Expected Results** section seamlessly integrated:
-
 ---
 
 # Enhanced Index Fund Constructor (EIFC)
